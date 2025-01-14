@@ -3,5 +3,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start"
+  },
+  "devDependencies": {
+    "@netlify/plugin-nextjs": "^5.9.3"
   }
 }
