@@ -1,8 +1,7 @@
-"use client";
-
 import React, { useState, useRef, useEffect } from "react";
-import { random } from "canvas-sketch-util";
 import Image from "next/image";
+import { GalleryModal } from "./GalleryModal";
+import { supabase } from "../lib/db";
 
 const GRID_SIZES = [16, 32, 64, 128];
 const TOOLS = ["draw", "erase", "fill"];
@@ -20,13 +19,14 @@ const PREDEFINED_ART = [
     name: "FB Logo",
     url: "https://hebbkx1anhila5yf.public.blob.vercel-storage.com/Screen%20Shot%202025-01-13%20at%206.41.14%20PM-ER8gD2c2C0fGvn39eevCO4UVXlDrIv.png",
   },
-  { name: "Character 1", url: "/placeholder.svg?height=200&width=200" },
-  { name: "Character 2", url: "/placeholder.svg?height=200&width=200" },
-  { name: "Character 3", url: "/placeholder.svg?height=200&width=200" },
-  { name: "Character 4", url: "/placeholder.svg?height=200&width=200" },
+  { name: "Fan Art", url: "/images/fanartfrombosu.png" },
 ];
 
 const FinalBosuPixelArt = () => {
+  const [discordName, setDiscordName] = useState("");
+  const [isGalleryOpen, setIsGalleryOpen] = useState(false);
+  const [savedArtworks, setSavedArtworks] = useState([]);
+  const [statusMessage, setStatusMessage] = useState({ type: "", message: "" });
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [gridSize, setGridSize] = useState(32);
   const [currentColor, setCurrentColor] = useState(COLORS[0]);
@@ -36,8 +36,77 @@ const FinalBosuPixelArt = () => {
   const [isDarkMode, setIsDarkMode] = useState(true);
 
   useEffect(() => {
+    fetchSavedArtworks();
+  }, []);
+
+  useEffect(() => {
     initializeGrid();
   }, [gridSize]);
+
+  const fetchSavedArtworks = async () => {
+    const { data, error } = await supabase
+      .from("pixel_artworks")
+      .select("*")
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      setStatusMessage({ type: "error", message: error.message });
+      return;
+    }
+
+    setSavedArtworks(data || []);
+  };
+
+  const saveArtwork = async () => {
+    if (!discordName) {
+      setStatusMessage({
+        type: "error",
+        message: "Please enter your Discord name to save your artwork",
+      });
+      return;
+    }
+
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const imageUrl = canvas.toDataURL();
+
+    const { error } = await supabase.from("pixel_artworks").insert([
+      {
+        discord_name: discordName,
+        image_url: imageUrl,
+      },
+    ]);
+
+    if (error) {
+      setStatusMessage({ type: "error", message: error.message });
+      return;
+    }
+
+    setStatusMessage({
+      type: "success",
+      message: "Your pixel art has been added to the gallery",
+    });
+    fetchSavedArtworks();
+  };
+
+  const StatusMessage = ({
+    type,
+    message,
+  }: {
+    type: string;
+    message: string;
+  }) => {
+    if (!message) return null;
+
+    const bgColor = type === "error" ? "bg-red-500" : "bg-green-500";
+
+    return (
+      <div className={`${bgColor} text-white px-4 py-2 rounded mb-4`}>
+        {message}
+      </div>
+    );
+  };
 
   const initializeGrid = () => {
     const newGrid = Array(gridSize)
@@ -62,7 +131,6 @@ const FinalBosuPixelArt = () => {
       });
     });
 
-    // Draw grid lines
     ctx.strokeStyle = isDarkMode ? "#333333" : "#cccccc";
     ctx.lineWidth = 0.5;
 
@@ -130,6 +198,7 @@ const FinalBosuPixelArt = () => {
     if (!isDrawing) return;
     handleCanvasClick(e);
   };
+
   const convertToPixelArt = async (imageUrl: string) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -137,7 +206,7 @@ const FinalBosuPixelArt = () => {
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    const img = new window.Image(); // Using window.Image instead of Image
+    const img = new window.Image();
     img.crossOrigin = "anonymous";
 
     img.onload = () => {
@@ -160,7 +229,6 @@ const FinalBosuPixelArt = () => {
           const g = data[i + 1];
           const b = data[i + 2];
 
-          // Apply dithering
           const originalColor = [r, g, b];
           const palette = COLORS.map(hexToRgb);
           const ditheredColor = applyDithering(originalColor, palette, x, y);
@@ -189,7 +257,6 @@ const FinalBosuPixelArt = () => {
     const closestColor = findClosestColor(color, palette);
     const error = color.map((c, i) => c - closestColor[i]);
 
-    // Floyd-Steinberg dithering
     distributeError(error, x, y, 7 / 16);
     distributeError(error, x - 1, y + 1, 3 / 16);
     distributeError(error, x, y + 1, 5 / 16);
@@ -284,6 +351,10 @@ const FinalBosuPixelArt = () => {
             height={50}
           />
         </div>
+        <StatusMessage
+          type={statusMessage.type}
+          message={statusMessage.message}
+        />
 
         <div className="flex flex-wrap -mx-2 mb-4">
           <div className="w-full md:w-1/2 px-2 mb-4">
@@ -346,6 +417,30 @@ const FinalBosuPixelArt = () => {
         </div>
 
         <div className="mb-6">
+          <div className="flex gap-4 mb-4">
+            <input
+              type="text"
+              placeholder="Enter your Discord name"
+              value={discordName}
+              onChange={(e) => setDiscordName(e.target.value)}
+              className="flex-1 p-2 rounded border dark:bg-gray-700 dark:border-gray-600 dark:text-white"
+            />
+            <button
+              onClick={saveArtwork}
+              className="px-4 py-2 rounded bg-purple-500 text-white hover:bg-purple-600"
+            >
+              Save to Gallery
+            </button>
+            <button
+              onClick={() => setIsGalleryOpen(true)}
+              className="px-4 py-2 rounded bg-blue-500 text-white hover:bg-blue-600"
+            >
+              View Gallery
+            </button>
+          </div>
+        </div>
+
+        <div className="mb-6">
           <canvas
             ref={canvasRef}
             width={512}
@@ -396,6 +491,16 @@ const FinalBosuPixelArt = () => {
             ))}
           </div>
         </div>
+
+        <GalleryModal
+          isOpen={isGalleryOpen}
+          onClose={() => setIsGalleryOpen(false)}
+          artworks={savedArtworks}
+          onSelect={(artwork) => {
+            convertToPixelArt(artwork.image_url);
+            setIsGalleryOpen(false);
+          }}
+        />
       </div>
     </div>
   );
