@@ -8,12 +8,7 @@ interface GalleryModalProps {
   onSelect: (artwork: any) => void;
 }
 
-const GalleryModal: React.FC<GalleryModalProps> = ({
-  isOpen,
-  onClose,
-  artworks,
-  onSelect,
-}) => {
+const GalleryModal: React.FC<GalleryModalProps> = ({ isOpen, onClose, artworks, onSelect }) => {
   if (!isOpen) return null;
 
   return (
@@ -56,3 +51,4 @@ const GalleryModal: React.FC<GalleryModalProps> = ({
 };
 
 export default GalleryModal;
+

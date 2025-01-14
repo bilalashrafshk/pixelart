@@ -1,7 +1,8 @@
 import React, { useState, useRef, useEffect } from "react";
 import Image from "next/image";
-import { GalleryModal } from "./GalleryModal";
+import  GalleryModal  from "./GalleryModal";
 import { supabase } from "../lib/db";
+
 
 const GRID_SIZES = [16, 32, 64, 128];
 const TOOLS = ["draw", "erase", "fill"];
