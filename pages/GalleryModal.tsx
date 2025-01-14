@@ -1,12 +1,19 @@
 import React from "react";
 import Image from "next/image";
 
-export const GalleryModal: React.FC<{
+interface GalleryModalProps {
   isOpen: boolean;
   onClose: () => void;
   artworks: any[];
   onSelect: (artwork: any) => void;
-}> = ({ isOpen, onClose, artworks, onSelect }) => {
+}
+
+const GalleryModal: React.FC<GalleryModalProps> = ({
+  isOpen,
+  onClose,
+  artworks,
+  onSelect,
+}) => {
   if (!isOpen) return null;
 
   return (
@@ -47,3 +54,5 @@ export const GalleryModal: React.FC<{
     </div>
   );
 };
+
+export default GalleryModal;
