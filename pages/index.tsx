@@ -1,18 +1,34 @@
 import React, { useState, useRef, useEffect } from "react";
 import Image from "next/image";
-import  GalleryModal  from "./GalleryModal";
+import GalleryModal from "./GalleryModal";
 import { supabase } from "../lib/db";
-
-
-const GRID_SIZES = [16, 32, 64, 128];
+import { SketchPicker } from "react-color";
+import { photoToPixelArt } from "./utils/pixelArtConverter";
+const edgeThresh = 128;
+const edgeDilate = 3;
+const GRID_SIZES = [16, 32, 64, 128, 256, 512];
 const TOOLS = ["draw", "erase", "fill"];
 const COLORS = [
   "#ff3e3e",
+  "#ff7f00",
   "#ffd700",
-  "#1a1b4b",
+  "#00ff00",
+  "#00ffff",
+  "#0000ff",
+  "#8b00ff",
   "#ffffff",
   "#000000",
-  "#4a4a4a",
+  "#808080",
+  "#a52a2a",
+  "#ffa500",
+  "#ffff00",
+  "#008000",
+  "#4b0082",
+  "#ee82ee",
+  "#ffc0cb",
+  "#800000",
+  "#008080",
+  "#800080",
 ];
 
 const PREDEFINED_ART = [
@@ -23,7 +39,7 @@ const PREDEFINED_ART = [
   { name: "Fan Art", url: "/images/fanartfrombosu.png" },
 ];
 
-const FinalBosuPixelArt = () => {
+const FinalBosuPixelArt: React.FC = () => {
   const [discordName, setDiscordName] = useState("");
   const [isGalleryOpen, setIsGalleryOpen] = useState(false);
   const [savedArtworks, setSavedArtworks] = useState([]);
@@ -35,6 +51,15 @@ const FinalBosuPixelArt = () => {
   const [isDrawing, setIsDrawing] = useState(false);
   const [pixelData, setPixelData] = useState<string[][]>([]);
   const [isDarkMode, setIsDarkMode] = useState(true);
+  const [isLoading, setIsLoading] = useState(false);
+  const canvasSize = 512;
+  const [showColorPicker, setShowColorPicker] = useState(false);
+  const [customColor, setCustomColor] = useState("#000000");
+  const [history, setHistory] = useState<string[][][]>([]);
+  const [historyIndex, setHistoryIndex] = useState(-1);
+  const [zoom, setZoom] = useState(1);
+  const [gridOpacity, setGridOpacity] = useState(0.5);
+  const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     fetchSavedArtworks();
@@ -91,12 +116,9 @@ const FinalBosuPixelArt = () => {
     fetchSavedArtworks();
   };
 
-  const StatusMessage = ({
+  const StatusMessage: React.FC<{ type: string; message: string }> = ({
     type,
     message,
-  }: {
-    type: string;
-    message: string;
   }) => {
     if (!message) return null;
 
@@ -114,6 +136,7 @@ const FinalBosuPixelArt = () => {
       .fill("")
       .map(() => Array(gridSize).fill(isDarkMode ? "#000000" : "#ffffff"));
     setPixelData(newGrid);
+    addToHistory(newGrid);
     drawGrid();
   };
 
@@ -123,7 +146,9 @@ const FinalBosuPixelArt = () => {
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    const cellSize = canvas.width / gridSize;
+    const cellSize = canvasSize / gridSize;
+
+    ctx.clearRect(0, 0, canvasSize, canvasSize);
 
     pixelData.forEach((row, y) => {
       row.forEach((color, x) => {
@@ -132,19 +157,23 @@ const FinalBosuPixelArt = () => {
       });
     });
 
-    ctx.strokeStyle = isDarkMode ? "#333333" : "#cccccc";
-    ctx.lineWidth = 0.5;
+    if (gridOpacity > 0) {
+      ctx.strokeStyle = isDarkMode
+        ? `rgba(51, 51, 51, ${gridOpacity})`
+        : `rgba(204, 204, 204, ${gridOpacity})`;
+      ctx.lineWidth = 0.5;
 
-    for (let i = 0; i <= gridSize; i++) {
-      ctx.beginPath();
-      ctx.moveTo(i * cellSize, 0);
-      ctx.lineTo(i * cellSize, canvas.height);
-      ctx.stroke();
+      for (let i = 0; i <= gridSize; i++) {
+        ctx.beginPath();
+        ctx.moveTo(i * cellSize, 0);
+        ctx.lineTo(i * cellSize, canvasSize);
+        ctx.stroke();
 
-      ctx.beginPath();
-      ctx.moveTo(0, i * cellSize);
-      ctx.lineTo(canvas.width, i * cellSize);
-      ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(0, i * cellSize);
+        ctx.lineTo(canvasSize, i * cellSize);
+        ctx.stroke();
+      }
     }
   };
 
@@ -153,8 +182,14 @@ const FinalBosuPixelArt = () => {
     if (!canvas) return;
 
     const rect = canvas.getBoundingClientRect();
-    const x = Math.floor((e.clientX - rect.left) / (canvas.width / gridSize));
-    const y = Math.floor((e.clientY - rect.top) / (canvas.height / gridSize));
+    const scaleX = canvasSize / rect.width;
+    const scaleY = canvasSize / rect.height;
+    const x = Math.floor(
+      ((e.clientX - rect.left) * scaleX) / (canvasSize / gridSize),
+    );
+    const y = Math.floor(
+      ((e.clientY - rect.top) * scaleY) / (canvasSize / gridSize),
+    );
 
     if (x < 0 || y < 0 || x >= gridSize || y >= gridSize) return;
 
@@ -173,6 +208,7 @@ const FinalBosuPixelArt = () => {
     }
 
     setPixelData(newPixelData);
+    addToHistory(newPixelData);
     drawGrid();
   };
 
@@ -201,119 +237,570 @@ const FinalBosuPixelArt = () => {
   };
 
   const convertToPixelArt = async (imageUrl: string) => {
+    setIsLoading(true);
     const canvas = canvasRef.current;
-    if (!canvas) return;
 
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
+    if (!canvas) {
+      setIsLoading(false);
+      return;
+    }
 
-    const img = new window.Image();
-    img.crossOrigin = "anonymous";
+    try {
+      // Define NES-style palette
+      const NES_PALETTE: [number, number, number][] = [
+        [0, 0, 0], // Black
+        [188, 0, 0], // Dark Red
+        [255, 51, 51], // Red
+        [255, 165, 0], // Orange
+        [255, 255, 0], // Yellow
+        [51, 255, 51], // Light Green
+        [0, 204, 0], // Green
+        [0, 204, 204], // Cyan
+        [0, 0, 255], // Blue
+        [255, 0, 255], // Magenta
+        [128, 0, 128], // Purple
+        [255, 255, 255], // White
+        [192, 192, 192], // Light Gray
+        [128, 128, 128], // Mid Gray
+      ];
 
-    img.onload = () => {
-      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      const data = imageData.data;
+      const img = new window.Image();
+      img.src = imageUrl;
+      await img.decode();
 
-      const pixelSize = canvas.width / gridSize;
+      // Create a temporary canvas for processing
+      const tempCanvas = document.createElement("canvas");
+      const tempCtx = tempCanvas.getContext("2d");
+      if (!tempCtx)
+        throw new Error("Failed to create temporary canvas context");
+
+      // Set the temp canvas size to match our desired grid size
+      tempCanvas.width = gridSize;
+      tempCanvas.height = gridSize;
+
+      // Draw the image scaled to our grid size
+      tempCtx.drawImage(img, 0, 0, gridSize, gridSize);
+
+      // Get the pixel data from the scaled image
+      const imageData = tempCtx.getImageData(0, 0, gridSize, gridSize);
+
+      // Process the image with the 8-bit style
+      const processedData = performNESPixelArt(
+        imageData,
+        1,
+        edgeThresh,
+        NES_PALETTE,
+      ); // gridSize of 1 since we've already scaled
+
+      // Convert processed data to our grid format
       const newPixelData = Array(gridSize)
-        .fill("")
+        .fill(null)
         .map(() => Array(gridSize).fill(""));
 
       for (let y = 0; y < gridSize; y++) {
         for (let x = 0; x < gridSize; x++) {
-          const i =
-            (Math.floor(y * pixelSize) * canvas.width +
-              Math.floor(x * pixelSize)) *
-            4;
-          const r = data[i];
-          const g = data[i + 1];
-          const b = data[i + 2];
-
-          const originalColor = [r, g, b];
-          const palette = COLORS.map(hexToRgb);
-          const ditheredColor = applyDithering(originalColor, palette, x, y);
-
-          newPixelData[y][x] = rgbToHex(
-            ditheredColor[0],
-            ditheredColor[1],
-            ditheredColor[2],
-          );
+          const idx = (y * gridSize + x) * 4;
+          const r = processedData.data[idx];
+          const g = processedData.data[idx + 1];
+          const b = processedData.data[idx + 2];
+          newPixelData[y][x] = `rgb(${r},${g},${b})`;
         }
       }
 
+      // Update the pixel data state
       setPixelData(newPixelData);
+      addToHistory(newPixelData);
       drawGrid();
-    };
-
-    img.src = imageUrl;
+    } catch (error) {
+      console.error("Error in convertToPixelArt:", error);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
+  const colorDistancePerceptual = (
+    c1: [number, number, number],
+    c2: [number, number, number],
+  ): number => {
+    // Convert to LAB color space for better perceptual matching
+    const lab1 = rgbToLab(c1);
+    const lab2 = rgbToLab(c2);
+
+    // Calculate delta E (color difference)
+    const deltaL = lab1[0] - lab2[0];
+    const deltaA = lab1[1] - lab2[1];
+    const deltaB = lab1[2] - lab2[2];
+
+    return Math.sqrt(
+      Math.pow(deltaL, 2) + Math.pow(deltaA, 2) + Math.pow(deltaB, 2),
+    );
+  };
   const applyDithering = (
-    color: number[],
-    palette: number[][],
+    color: [number, number, number],
+    targetColor: [number, number, number],
     x: number,
     y: number,
-  ) => {
-    const closestColor = findClosestColor(color, palette);
-    const error = color.map((c, i) => c - closestColor[i]);
+    errors: number[][][],
+  ): [number, number, number] => {
+    const error = [
+      color[0] - targetColor[0],
+      color[1] - targetColor[1],
+      color[2] - targetColor[2],
+    ];
 
-    distributeError(error, x, y, 7 / 16);
-    distributeError(error, x - 1, y + 1, 3 / 16);
-    distributeError(error, x, y + 1, 5 / 16);
-    distributeError(error, x + 1, y + 1, 1 / 16);
+    // Floyd-Steinberg distribution matrix
+    const matrix = [
+      [null, null, 7 / 16],
+      [3 / 16, 5 / 16, 1 / 16],
+    ];
+
+    // Distribute error
+    for (let i = 0; i < 2; i++) {
+      for (let j = -1; j < 2; j++) {
+        if (matrix[i][j + 1] === null) continue;
+        const factor = matrix[i][j + 1];
+        errors[y + i][x + j] = errors[y + i][x + j].map(
+          (e, idx) => e + error[idx] * factor,
+        );
+      }
+    }
+
+    return targetColor;
+  };
+  // Precompute color lookup table for faster matching
+  const createColorLookup = (palette: [number, number, number][]) => {
+    const lookup = new Map<string, [number, number, number]>();
+
+    // Create a lower resolution lookup table (e.g., 32 levels instead of 256)
+    const resolution = 32;
+    const step = 256 / resolution;
+
+    for (let r = 0; r < 256; r += step) {
+      for (let g = 0; g < 256; g += step) {
+        for (let b = 0; b < 256; b += step) {
+          const color: [number, number, number] = [r, g, b];
+          let closestColor = palette[0];
+          let minDistance = colorDistancePerceptual(color, palette[0]);
+
+          for (const pColor of palette) {
+            const distance = colorDistancePerceptual(color, pColor);
+            if (distance < minDistance) {
+              minDistance = distance;
+              closestColor = pColor;
+            }
+          }
+
+          lookup.set(
+            `${Math.floor(r / step)},${Math.floor(g / step)},${Math.floor(b / step)}`,
+            closestColor,
+          );
+        }
+      }
+    }
+
+    return lookup;
+  };
+
+  const reduceNoise = (imageData: ImageData): ImageData => {
+    const { width, height, data } = imageData;
+    const output = new Uint8ClampedArray(data.length);
+    const radius = 1;
+
+    for (let y = radius; y < height - radius; y++) {
+      for (let x = radius; x < width - radius; x++) {
+        const idx = (y * width + x) * 4;
+        let r = 0,
+          g = 0,
+          b = 0,
+          count = 0;
+
+        // Average with neighbors
+        for (let ny = -radius; ny <= radius; ny++) {
+          for (let nx = -radius; nx <= radius; nx++) {
+            const nidx = ((y + ny) * width + (x + nx)) * 4;
+            r += data[nidx];
+            g += data[nidx + 1];
+            b += data[nidx + 2];
+            count++;
+          }
+        }
+
+        output[idx] = Math.round(r / count);
+        output[idx + 1] = Math.round(g / count);
+        output[idx + 2] = Math.round(b / count);
+        output[idx + 3] = data[idx + 3];
+      }
+    }
+
+    return new ImageData(output, width, height);
+  };
+  // Add this before color matching
+  const enhanceEdges = (imageData: ImageData): ImageData => {
+    const { width, height, data } = imageData;
+    const output = new Uint8ClampedArray(data.length);
+    const sharpenKernel = [0, -1, 0, -1, 5, -1, 0, -1, 0];
+
+    for (let y = 1; y < height - 1; y++) {
+      for (let x = 1; x < width - 1; x++) {
+        let r = 0,
+          g = 0,
+          b = 0;
+
+        for (let ky = -1; ky <= 1; ky++) {
+          for (let kx = -1; kx <= 1; kx++) {
+            const idx = ((y + ky) * width + (x + kx)) * 4;
+            const kernel = sharpenKernel[(ky + 1) * 3 + (kx + 1)];
+            r += data[idx] * kernel;
+            g += data[idx + 1] * kernel;
+            b += data[idx + 2] * kernel;
+          }
+        }
+
+        const idx = (y * width + x) * 4;
+        output[idx] = Math.min(255, Math.max(0, r));
+        output[idx + 1] = Math.min(255, Math.max(0, g));
+        output[idx + 2] = Math.min(255, Math.max(0, b));
+        output[idx + 3] = data[idx + 3];
+      }
+    }
+    return new ImageData(output, width, height);
+  };
+  // Modified findClosestPaletteColor using lookup table
+  const findClosestPaletteColorFast = (
+    color: [number, number, number],
+    lookup: Map<string, [number, number, number]>,
+    resolution: number = 32,
+  ): [number, number, number] => {
+    const step = 256 / resolution;
+    const key = `${Math.floor(color[0] / step)},${Math.floor(color[1] / step)},${Math.floor(color[2] / step)}`;
+    return lookup.get(key) || [0, 0, 0];
+  };
+  // Helper functions for RGB to LAB conversion
+  const rgbToLab = (
+    rgb: [number, number, number],
+  ): [number, number, number] => {
+    // First convert RGB to XYZ
+    const xyz = rgbToXyz(rgb);
+    // Then convert XYZ to LAB
+    return xyzToLab(xyz);
+  };
+
+  const rgbToXyz = (
+    rgb: [number, number, number],
+  ): [number, number, number] => {
+    // Convert RGB values to 0-1 range
+    let r = rgb[0] / 255;
+    let g = rgb[1] / 255;
+    let b = rgb[2] / 255;
+
+    // Inverse gamma correction
+    r = r > 0.04045 ? Math.pow((r + 0.055) / 1.055, 2.4) : r / 12.92;
+    g = g > 0.04045 ? Math.pow((g + 0.055) / 1.055, 2.4) : g / 12.92;
+    b = b > 0.04045 ? Math.pow((b + 0.055) / 1.055, 2.4) : b / 12.92;
+
+    // Convert to XYZ
+    const x = r * 0.4124 + g * 0.3576 + b * 0.1805;
+    const y = r * 0.2126 + g * 0.7152 + b * 0.0722;
+    const z = r * 0.0193 + g * 0.1192 + b * 0.9505;
+
+    return [x * 100, y * 100, z * 100];
+  };
+
+  const xyzToLab = (
+    xyz: [number, number, number],
+  ): [number, number, number] => {
+    // D65 illuminant reference values
+    const xn = 95.047;
+    const yn = 100.0;
+    const zn = 108.883;
+
+    let x = xyz[0] / xn;
+    let y = xyz[1] / yn;
+    let z = xyz[2] / zn;
+
+    x = x > 0.008856 ? Math.pow(x, 1 / 3) : 7.787 * x + 16 / 116;
+    y = y > 0.008856 ? Math.pow(y, 1 / 3) : 7.787 * y + 16 / 116;
+    z = z > 0.008856 ? Math.pow(z, 1 / 3) : 7.787 * z + 16 / 116;
+
+    const L = 116 * y - 16;
+    const a = 500 * (x - y);
+    const b = 200 * (y - z);
+
+    return [L, a, b];
+  };
+  // Modified performPixelArt with NES-specific optimizations
+  const performNESPixelArt = (
+    imageData: ImageData,
+    gridSize: number,
+    edgeThresh: number,
+    palette: [number, number, number][],
+    options = {
+      enableDithering: true,
+      enableNoise: true,
+      enableEdgeEnhancement: true,
+      scanlines: true,
+    },
+  ): ImageData => {
+    let processedData = imageData;
+
+    if (options.enableNoise) {
+      processedData = reduceNoise(processedData);
+    }
+
+    if (options.enableEdgeEnhancement) {
+      processedData = enhanceEdges(processedData);
+    }
+    const { width, height, data } = imageData;
+    const outputData = new Uint8ClampedArray(data.length);
+
+    // Create color lookup table
+    const colorLookup = createColorLookup(palette);
+
+    // Pre-process: Increase contrast slightly to make colors more distinct
+    const contrastFactor = 1.1;
+
+    for (let y = 0; y < height; y += gridSize) {
+      for (let x = 0; x < width; x += gridSize) {
+        // Get average color for grid block
+        const avgColor = calculateAverageColor(imageData, x, y, gridSize);
+
+        // Apply contrast adjustment
+        const contrastedColor: [number, number, number] = [
+          Math.min(
+            255,
+            Math.max(
+              0,
+              Math.floor(
+                ((avgColor[0] / 255 - 0.5) * contrastFactor + 0.5) * 255,
+              ),
+            ),
+          ),
+          Math.min(
+            255,
+            Math.max(
+              0,
+              Math.floor(
+                ((avgColor[1] / 255 - 0.5) * contrastFactor + 0.5) * 255,
+              ),
+            ),
+          ),
+          Math.min(
+            255,
+            Math.max(
+              0,
+              Math.floor(
+                ((avgColor[2] / 255 - 0.5) * contrastFactor + 0.5) * 255,
+              ),
+            ),
+          ),
+        ];
+
+        // Find closest NES color using lookup table
+        const nesColor = findClosestPaletteColorFast(
+          contrastedColor,
+          colorLookup,
+        );
+
+        // Fill grid block with NES color
+        for (
+          let blockY = y;
+          blockY < Math.min(y + gridSize, height);
+          blockY++
+        ) {
+          for (
+            let blockX = x;
+            blockX < Math.min(x + gridSize, width);
+            blockX++
+          ) {
+            const idx = (blockY * width + blockX) * 4;
+            outputData[idx] = nesColor[0];
+            outputData[idx + 1] = nesColor[1];
+            outputData[idx + 2] = nesColor[2];
+            outputData[idx + 3] = 255;
+          }
+        }
+      }
+    }
+
+    // Optional: Add slight scanline effect for more NES feel
+    for (let y = 0; y < height; y++) {
+      if (y % 2 === 0) continue; // Skip every other line
+      for (let x = 0; x < width; x++) {
+        const idx = (y * width + x) * 4;
+        outputData[idx] = Math.floor(outputData[idx] * 0.9);
+        outputData[idx + 1] = Math.floor(outputData[idx + 1] * 0.9);
+        outputData[idx + 2] = Math.floor(outputData[idx + 2] * 0.9);
+      }
+    }
+
+    return new ImageData(outputData, width, height);
+  };
+  const performPixelArt = (
+    imageData: ImageData,
+    gridSize: number,
+    edgeThresh: number,
+    palette: [number, number, number][],
+  ): ImageData => {
+    const { width, height, data } = imageData;
+    const outputData = new Uint8ClampedArray(data.length);
+
+    // Step 1: Apply Sobel edge detection
+    const edges = sobelEdgeDetection(imageData, edgeThresh);
+
+    // Step 2: Process each pixel
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const pixelIndex = (y * width + x) * 4;
+
+        // Get current pixel color
+        const currentColor: [number, number, number] = [
+          data[pixelIndex],
+          data[pixelIndex + 1],
+          data[pixelIndex + 2],
+        ];
+
+        // Find the closest color from the palette
+        const closestColor = findClosestPaletteColor(currentColor, palette);
+
+        // Apply edge detection or closest palette color
+        if (edges[pixelIndex] === 255) {
+          outputData[pixelIndex] = 0;
+          outputData[pixelIndex + 1] = 0;
+          outputData[pixelIndex + 2] = 0;
+          outputData[pixelIndex + 3] = 255;
+        } else {
+          outputData[pixelIndex] = closestColor[0];
+          outputData[pixelIndex + 1] = closestColor[1];
+          outputData[pixelIndex + 2] = closestColor[2];
+          outputData[pixelIndex + 3] = 255;
+        }
+      }
+    }
+
+    return new ImageData(outputData, width, height);
+  };
+  // Sobel Edge Detection
+  const sobelEdgeDetection = (
+    imageData: ImageData,
+    threshold: number,
+  ): Uint8ClampedArray => {
+    const { width, height, data } = imageData;
+    const edgeData = new Uint8ClampedArray(data.length);
+
+    const sobelX = [-1, 0, 1, -2, 0, 2, -1, 0, 1];
+    const sobelY = [-1, -2, -1, 0, 0, 0, 1, 2, 1];
+
+    for (let y = 1; y < height - 1; y++) {
+      for (let x = 1; x < width - 1; x++) {
+        let gx = 0;
+        let gy = 0;
+
+        for (let ky = -1; ky <= 1; ky++) {
+          for (let kx = -1; kx <= 1; kx++) {
+            const px = x + kx;
+            const py = y + ky;
+            const pixelIndex = (py * width + px) * 4;
+
+            const intensity =
+              data[pixelIndex] * 0.3 +
+              data[pixelIndex + 1] * 0.59 +
+              data[pixelIndex + 2] * 0.11;
+            gx += intensity * sobelX[(ky + 1) * 3 + (kx + 1)];
+            gy += intensity * sobelY[(ky + 1) * 3 + (kx + 1)];
+          }
+        }
+
+        const magnitude = Math.sqrt(gx * gx + gy * gy);
+        const edgeValue = magnitude > threshold ? 255 : 0;
+
+        const pixelIndex = (y * width + x) * 4;
+        edgeData[pixelIndex] = edgeValue;
+        edgeData[pixelIndex + 1] = edgeValue;
+        edgeData[pixelIndex + 2] = edgeValue;
+        edgeData[pixelIndex + 3] = 255;
+      }
+    }
+
+    return edgeData;
+  };
+
+  const findClosestPaletteColor = (
+    color: [number, number, number],
+    palette: [number, number, number][],
+  ): [number, number, number] => {
+    let closestColor = palette[0];
+    let minDistance = Infinity;
+
+    for (const pColor of palette) {
+      const distance = colorDistance(color, pColor);
+      if (distance < minDistance) {
+        minDistance = distance;
+        closestColor = pColor;
+      }
+    }
 
     return closestColor;
   };
 
-  const distributeError = (
-    error: number[],
-    x: number,
-    y: number,
-    factor: number,
-  ) => {
-    if (x < 0 || x >= gridSize || y < 0 || y >= gridSize) return;
+  // Ensure this helper function uses full RGB distance
+  const colorDistance = (
+    c1: [number, number, number],
+    c2: [number, number, number],
+  ): number => {
+    return Math.sqrt(
+      Math.pow(c1[0] - c2[0], 2) +
+        Math.pow(c1[1] - c2[1], 2) +
+        Math.pow(c1[2] - c2[2], 2),
+    );
+  };
 
-    const newColor = pixelData[y][x]
-      .slice(1)
-      .match(/.{2}/g)
-      ?.map((hex) => parseInt(hex, 16)) || [0, 0, 0];
-    for (let i = 0; i < 3; i++) {
-      newColor[i] = Math.max(
-        0,
-        Math.min(255, Math.round(newColor[i] + error[i] * factor)),
-      );
+  const calculateAverageColor = (
+    imageData: ImageData,
+    startX: number,
+    startY: number,
+    size: number,
+  ): [number, number, number] => {
+    const { width, height, data } = imageData;
+    let totalR = 0,
+      totalG = 0,
+      totalB = 0,
+      count = 0;
+
+    for (let y = startY; y < startY + size && y < height; y++) {
+      for (let x = startX; x < startX + size && x < width; x++) {
+        const index = (y * width + x) * 4; // RGBA format
+        totalR += data[index]; // Red
+        totalG += data[index + 1]; // Green
+        totalB += data[index + 2]; // Blue
+        count++;
+      }
     }
-    pixelData[y][x] = rgbToHex(newColor[0], newColor[1], newColor[2]);
+
+    // Return the average RGB values
+    return [
+      Math.min(255, Math.max(0, Math.floor(totalR / count))),
+      Math.min(255, Math.max(0, Math.floor(totalG / count))),
+      Math.min(255, Math.max(0, Math.floor(totalB / count))),
+    ];
   };
 
-  const findClosestColor = (color: number[], palette: number[][]) => {
-    return palette.reduce((closest, current) => {
-      const currentDiff = color.reduce(
-        (sum, c, i) => sum + Math.abs(c - current[i]),
-        0,
-      );
-      const closestDiff = color.reduce(
-        (sum, c, i) => sum + Math.abs(c - closest[i]),
-        0,
-      );
-      return currentDiff < closestDiff ? current : closest;
-    });
-  };
+  const getPixelDataFromImageData = (imageData: ImageData): string[][] => {
+    const { width, height, data } = imageData;
+    const pixelData: string[][] = [];
 
-  const hexToRgb = (hex: string) => {
-    const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
-    return result
-      ? [
-          parseInt(result[1], 16),
-          parseInt(result[2], 16),
-          parseInt(result[3], 16),
-        ]
-      : [0, 0, 0];
-  };
+    for (let y = 0; y < height; y++) {
+      const row: string[] = [];
+      for (let x = 0; x < width; x++) {
+        const index = (y * width + x) * 4;
+        const r = data[index];
+        const g = data[index + 1];
+        const b = data[index + 2];
+        row.push(`rgb(${r},${g},${b})`);
+      }
+      pixelData.push(row);
+    }
 
-  const rgbToHex = (r: number, g: number, b: number) => {
-    return "#" + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1);
+    return pixelData;
   };
 
   const downloadImage = () => {
@@ -333,9 +820,39 @@ const FinalBosuPixelArt = () => {
     const reader = new FileReader();
     reader.onload = (e) => {
       const imageUrl = e.target?.result as string;
+      //photoToPixelArt(imageUrl, gridSize, edgeThresh, edgeDilate);
+
       convertToPixelArt(imageUrl);
     };
     reader.readAsDataURL(file);
+  };
+
+  const addToHistory = (newPixelData: string[][]) => {
+    const newHistory = history.slice(0, historyIndex + 1);
+    newHistory.push(newPixelData);
+    setHistory(newHistory);
+    setHistoryIndex(newHistory.length - 1);
+  };
+
+  const undo = () => {
+    if (historyIndex > 0) {
+      setHistoryIndex(historyIndex - 1);
+      setPixelData(history[historyIndex - 1]);
+      drawGrid();
+    }
+  };
+
+  const redo = () => {
+    if (historyIndex < history.length - 1) {
+      setHistoryIndex(historyIndex + 1);
+      setPixelData(history[historyIndex + 1]);
+      drawGrid();
+    }
+  };
+
+  const handleZoomChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const newZoom = parseFloat(e.target.value);
+    setZoom(newZoom);
   };
 
   return (
@@ -363,7 +880,9 @@ const FinalBosuPixelArt = () => {
               {COLORS.map((color) => (
                 <button
                   key={color}
-                  className={`w-8 h-8 m-1 rounded ${color === currentColor ? "ring-2 ring-blue-500" : ""}`}
+                  className={`w-8 h-8 m-1 rounded ${
+                    color === currentColor ? "ring-2 ring-blue-500" : ""
+                  }`}
                   style={{ backgroundColor: color }}
                   onClick={() => setCurrentColor(color)}
                 />
@@ -375,13 +894,34 @@ const FinalBosuPixelArt = () => {
               {TOOLS.map((tool) => (
                 <button
                   key={tool}
-                  className={`px-3 py-1 m-1 rounded ${tool === currentTool ? "bg-blue-500 text-white" : "bg-gray-200 text-black"}`}
+                  className={`px-3 py-1 m-1 rounded ${
+                    tool === currentTool
+                      ? "bg-blue-500 text-white"
+                      : "bg-gray-200 text-black"
+                  }`}
                   onClick={() => setCurrentTool(tool)}
                 >
                   {tool}
                 </button>
               ))}
             </div>
+            <button
+              className="px-3 py-1 m-1 rounded bg-gray-200 text-black"
+              onClick={() => setShowColorPicker(!showColorPicker)}
+            >
+              Custom Color
+            </button>
+            {showColorPicker && (
+              <div className="absolute z-10">
+                <SketchPicker
+                  color={customColor}
+                  onChangeComplete={(color) => {
+                    setCustomColor(color.hex);
+                    setCurrentColor(color.hex);
+                  }}
+                />
+              </div>
+            )}
           </div>
         </div>
 
@@ -417,6 +957,59 @@ const FinalBosuPixelArt = () => {
           </div>
         </div>
 
+        <div className="flex flex-wrap -mx-2 mb-4">
+          <div className="w-full md:w-1/3 px-2 mb-4">
+            <button
+              className="w-full p-2 rounded bg-blue-500 text-white"
+              onClick={undo}
+              disabled={historyIndex <= 0}
+            >
+              Undo
+            </button>
+          </div>
+          <div className="w-full md:w-1/3 px-2 mb-4">
+            <button
+              className="w-full p-2 rounded bg-blue-500 text-white"
+              onClick={redo}
+              disabled={historyIndex >= history.length - 1}
+            >
+              Redo
+            </button>
+          </div>
+          <div className="w-full md:w-1/3 px-2 mb-4">
+            <label htmlFor="zoom" className="block mb-2">
+              Zoom
+            </label>
+            <input
+              id="zoom"
+              type="range"
+              min="1"
+              max="5"
+              step="0.1"
+              value={zoom}
+              onChange={handleZoomChange}
+              className="w-full"
+            />
+            <span>{zoom.toFixed(1)}x</span>
+          </div>
+          <div className="w-full md:w-1/3 px-2 mb-4">
+            <label htmlFor="gridOpacity" className="block mb-2">
+              Grid Opacity
+            </label>
+            <input
+              id="gridOpacity"
+              type="range"
+              min="0"
+              max="1"
+              step="0.1"
+              value={gridOpacity}
+              onChange={(e) => setGridOpacity(Number(e.target.value))}
+              className="w-full"
+            />
+            <span>{gridOpacity.toFixed(1)}</span>
+          </div>
+        </div>
+
         <div className="mb-6">
           <div className="flex gap-4 mb-4">
             <input
@@ -441,18 +1034,44 @@ const FinalBosuPixelArt = () => {
           </div>
         </div>
 
-        <div className="mb-6">
-          <canvas
-            ref={canvasRef}
-            width={512}
-            height={512}
-            className={`w-full border-4 ${isDarkMode ? "border-gray-700" : "border-gray-300"}`}
-            onClick={handleCanvasClick}
-            onMouseDown={() => setIsDrawing(true)}
-            onMouseMove={handleMouseMove}
-            onMouseUp={() => setIsDrawing(false)}
-            onMouseLeave={() => setIsDrawing(false)}
-          />
+        <div className="flex flex-col mb-6">
+          <div
+            className="mb-6 relative"
+            style={{
+              width: `${canvasSize}px`,
+              height: `${canvasSize}px`,
+              overflow: "auto",
+            }}
+          >
+            <div
+              ref={containerRef}
+              style={{
+                width: `${canvasSize * zoom}px`,
+                height: `${canvasSize * zoom}px`,
+              }}
+            >
+              {isLoading && (
+                <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-50 z-10">
+                  <div className="animate-spin rounded-full h-32 w-32 border-t-2 border-b-2 border-white"></div>
+                </div>
+              )}
+              <canvas
+                ref={canvasRef}
+                width={canvasSize}
+                height={canvasSize}
+                style={{
+                  width: `${canvasSize * zoom}px`,
+                  height: `${canvasSize * zoom}px`,
+                }}
+                className={`border-4 ${isDarkMode ? "border-gray-700" : "border-gray-300"}`}
+                onClick={handleCanvasClick}
+                onMouseDown={() => setIsDrawing(true)}
+                onMouseMove={handleMouseMove}
+                onMouseUp={() => setIsDrawing(false)}
+                onMouseLeave={() => setIsDrawing(false)}
+              />
+            </div>
+          </div>
         </div>
 
         <div className="flex justify-between mb-6">
@@ -477,7 +1096,9 @@ const FinalBosuPixelArt = () => {
               <div key={art.name} className="w-1/2 md:w-1/5 px-2 mb-4">
                 <button
                   className="w-full"
-                  onClick={() => convertToPixelArt(art.url)}
+                  onClick={() => {
+                    convertToPixelArt(art.url);
+                  }}
                 >
                   <Image
                     src={art.url}
@@ -498,6 +1119,7 @@ const FinalBosuPixelArt = () => {
           onClose={() => setIsGalleryOpen(false)}
           artworks={savedArtworks}
           onSelect={(artwork) => {
+            //photoToPixelArt(artwork.image_url, gridSize, edgeThresh, edgeDilate)
             convertToPixelArt(artwork.image_url);
             setIsGalleryOpen(false);
           }}

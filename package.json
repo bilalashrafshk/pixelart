@@ -16,6 +16,14 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.47.13",
-    "next": "^15.1.4"
+    "@tensorflow/tfjs-node": "^4.22.0",
+    "fs": "^0.0.1-security",
+    "image-js": "^0.36.0",
+    "jimp": "^1.6.0",
+    "next": "^15.1.4",
+    "path": "^0.12.7",
+    "react-color": "^2.19.3",
+    "torch": "^0.2.7",
+    "torchjs": "^13.0.0"
   }
 }
