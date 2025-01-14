@@ -3,7 +3,6 @@ import Image from "next/image";
 import GalleryModal from "./GalleryModal";
 import { supabase } from "../lib/db";
 import { SketchPicker } from "react-color";
-import { photoToPixelArt } from "./utils/pixelArtConverter";
 const edgeThresh = 128;
 const edgeDilate = 3;
 const GRID_SIZES = [16, 32, 64, 128, 256, 512];
